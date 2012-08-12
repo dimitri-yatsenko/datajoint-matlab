@@ -3,8 +3,8 @@
 % represent a relational expression based on other relvars.
 
 % To make the code R2009 compatible, toggle comments on the following two lines
-%classdef GeneralRelvar < dj.R2009CopyableRelvarMixin  % pre-R2011
-classdef GeneralRelvar < matlab.mixin.Copyable  %post-R2011
+classdef GeneralRelvar < dj.R2009CopyableRelvarMixin  % pre-R2011
+%classdef GeneralRelvar < matlab.mixin.Copyable  %post-R2011
     
     properties(Dependent, SetAccess = private)
         schema       % schema object
