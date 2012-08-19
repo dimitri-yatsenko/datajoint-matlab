@@ -31,7 +31,7 @@ classdef (Sealed) Table < handle
     end
     
     properties(Constant)
-        mysql_constants = {'CURRENT_TIMESTAMP','CURRENT_TIME','CURRENT_DATE'}
+        mysql_constants = {'CURRENT_TIMESTAMP'}
     end
     
     properties(Access=private)
@@ -387,7 +387,7 @@ classdef (Sealed) Table < handle
             if ismember(self.info.tier, {'imported','computed'}) && ...
                     ~isempty(which(self.className))
                 rel = eval(self.className);
-                if ~isa(rel,'dj.AutoPopulate') && ~isa(rel,'dj.Automatic')
+                if ~isa(rel,'dj.AutoPopulate')
                     fprintf(['\n!!! %s is a subtable. For referential integrity, ' ...
                         'drop its parent table instead.\n'], self.className)
                     if ~strcmpi('yes', input('Proceed anyway? yes/no >','s'))
@@ -436,13 +436,8 @@ classdef (Sealed) Table < handle
         end
     end
     
-    
-    
-    
-    
     methods(Access=private)
-        
-        
+    
         function declaration = getDeclaration(self)
             % extract the table declaration with the first percent-brace comment
             % block of the matching .m file.
@@ -452,7 +447,7 @@ classdef (Sealed) Table < handle
                 file = which(self.className);
                 assert(~isempty(file), 'DataJoint:MissingTableDefnition', ...
                     'Could not find table definition file %s', file)
-                declaration = dj.utils.readPercentBraceComment(file);
+                declaration = readPercentBraceComment(file);
                 assert(~isempty(declaration), 'DataJoint:MissingTableDefnition', ...
                     'Could not find the table declaration in %s', file)
             end
@@ -460,7 +455,6 @@ classdef (Sealed) Table < handle
         
         
         function create(self)
-            
             [tableInfo parents references fieldDefs] = ...
                 parseDeclaration(self.getDeclaration);
             cname = sprintf('%s.%s', tableInfo.package, tableInfo.className);
@@ -469,12 +463,12 @@ classdef (Sealed) Table < handle
             
             % compile the CREATE TABLE statement
             tableName = [...
-                dj.utils.tierPrefixes{strcmp(tableInfo.tier, dj.utils.allowedTiers)}, ...
-                dj.utils.camelCase(tableInfo.className, true)];
+                dj.Schema.tierPrefixes{strcmp(tableInfo.tier, dj.Schema.allowedTiers)}, ...
+                dj.Schema.fromCamelCase(tableInfo.className)];
             
             sql = sprintf('CREATE TABLE `%s`.`%s` (\n', self.schema.dbname, tableName);
             
-            % add inherited primary key header
+            % add inherited primary key attributes
             primaryKeyFields = {};
             for iRef = 1:length(parents)
                 for iField = find([parents{iRef}.table.header.iskey])
@@ -487,7 +481,7 @@ classdef (Sealed) Table < handle
                 end
             end
             
-            % add the new primary key header
+            % add the new primary key attribites
             if ~isempty(fieldDefs)
                 for iField = find([fieldDefs.iskey])
                     field = fieldDefs(iField);
@@ -498,7 +492,7 @@ classdef (Sealed) Table < handle
                 end
             end
             
-            % add secondary foreign key header
+            % add secondary foreign key attributes
             for iRef = 1:length(references)
                 for iField = find([references{iRef}.table.header.iskey])
                     field = references{iRef}.table.header(iField);
@@ -508,7 +502,7 @@ classdef (Sealed) Table < handle
                 end
             end
             
-            % add dependent header
+            % add dependent attributes
             if ~isempty(fieldDefs)
                 for iField = find(~[fieldDefs.iskey])
                     field = fieldDefs(iField);
@@ -565,6 +559,34 @@ end
 
 %          LOCAL FUNCTIONS
 
+function str = readPercentBraceComment(filename)
+% reads the initial comment block %{ ... %} in filename
+
+f = fopen(filename, 'rt');
+assert(f~=-1, 'Could not open %s', filename)
+str = '';
+
+% skip all lines that do not begin with a %{
+l = fgetl(f);
+while ischar(l) && ~strcmp(strtrim(l),'%{')
+    l = fgetl(f);
+end
+
+if ischar(l)
+    while true
+        l = fgetl(f);
+        assert(ischar(l), 'invalid verbatim string');
+        if strcmp(strtrim(l),'%}')
+            break;
+        end
+        str = sprintf('%s%s\n', str, l);
+    end
+end
+
+fclose(f);
+end
+
+
 
 function sql = fieldToSQL(field)
 % convert the structure field with header {'name' 'type' 'default' 'comment'}
@@ -598,29 +620,13 @@ references = {};
 fieldDefs = [];
 
 if ischar(declaration)
-    declaration = dj.utils.str2cell(declaration);
+    declaration = str2cell(declaration);
 end
 assert(iscellstr(declaration), ...
     'declaration must be a multiline string or a cellstr');
 
 % remove empty lines
 declaration(cellfun(@(x) isempty(strtrim(x)), declaration)) = [];
-
-% expand <<macros>>   TODO: make macro expansion recursive (if necessary)
-for macro = fieldnames(dj.utils.macros)'
-    while true
-        ix = find(strcmp(strtrim(declaration), ...
-            ['<<' macro{1} '>>']),1,'first');
-        if isempty(ix)
-            break
-        end
-        declaration = [
-            declaration(1:ix-1)
-            dj.utils.macros.(macro{1})
-            declaration(ix+1:end)
-            ];
-    end
-end
 
 % concatenate lines that end with a backslash to the next line
 i = 1;
@@ -644,7 +650,7 @@ pat = {
 tableInfo = regexp(declaration{1}, cat(2,pat{:}), 'names');
 assert(numel(tableInfo)==1, ...
     'incorrect syntax is table declaration, line 1')
-assert(ismember(tableInfo.tier, dj.utils.allowedTiers),...
+assert(ismember(tableInfo.tier, dj.Schema.allowedTiers),...
     ['Invalid tier for table ' tableInfo.className])
 
 if nargout > 1
@@ -696,4 +702,11 @@ assert(~any(fieldInfo.comment=='"'), ...
 assert(numel(fieldInfo)==1, ...
     'Invalid field declaration "%s"', line);
 fieldInfo.iskey = inKey;
+end
+
+
+function ret = str2cell(str)
+% convert a multi-line string into a cell array of one-line strings.
+ret = regexp(str,'\n','split')';
+ret = ret(~cellfun(@isempty, ret));  % remove empty strings
 end

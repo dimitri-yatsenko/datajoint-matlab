@@ -1,31 +1,37 @@
-% abstract class that allows a dj.Relvar to automatically populate its table.
+% dj.AutoPopulate is an abstract mixin class that allows a dj.Relvar object
+% to automatically populate its table.
 %
-% The deriving class must also derive from dj.Relvar and must define
-% properties 'table' of type dj.Table and 'popRel' of type dj.Relvar.
+% Derived classes must also inherit from dj.Relvar and must define the
+% constant property 'popRel' of type dj.GeneralRelvar.
 %
-% The derived class must define the callback function makeTuples(self, tuple),
-% which computes adds new fields to tuple and inserts it into the table as
-% self.insert(key)
+% Derived classes must define the callback function makeTuples(self, key),
+% which computes new tuples for the given key and inserts them into the table as
+% self.insert(tuple).
 %
-% A critical concept to understand is the populate relation.  It must be
-% defined in the derived class' property popRel.  The populate relation
-% determines the scope and granularity of makeTuples calls.
+% The constant property 'popRel' must be defined in the derived class.
+% dj.AutoPopulate/populate uses self.popRel to generate the list of unpopulated keys
+% for which self.makeTuples() will be invoked. Thus popRel determines the scope
+% and granularity of makeTuples calls.
 %
-% Once self.makeTuples(key) and self.popRel are defined, the user may
-% invoke self.populate to populate the table.
+% Once self.makeTuples and self.popRel are defined, the user may
+% invoke methods poopulate or parpopulate to automatically populate the table.
+%
+% The method parpopulate works similarly to populate but it uses the job reservation
+% table <package>.Jobs to enable execution by multiple processes in parallel.
+%
+% The job reservation table must be declated as <package>.Jobs in the same
+% schema package as this computed table. You may query the job reservation.
+% While the job is executing, the job status is set to "reserved". When the
+% job is completed, the entry is removed. When the job ends in error, the
+% status is set to "error" and the error stack is saved.
 
 classdef AutoPopulate < handle
     
-    properties(Access=private)
-        jobKey   % currently reserved job
-        jobRel   % the job reservation table (if any)
-    end
-    
     properties(Constant,Abstract)
-        popRel  % specify the relation providing tuples for which makeTuples is called.
+        popRel     % specify the relation providing tuples for which makeTuples is called.
     end
     
-    methods(Abstract,Access=protected)        
+    methods(Abstract,Access=protected)
         makeTuples(self, key)
         % makeTuples(self, key) must be defined by each automatically
         % populated relvar. makeTuples copies key as tuple, adds computed
@@ -33,27 +39,8 @@ classdef AutoPopulate < handle
     end
     
     methods
-        
-        function varargout = parPopulate(self, jobRel, varargin)
-            % dj.AutoPopulate/parPopulate - same as populate but with job
-            % reservation for distributed processing.
-            
-            if ~isa(jobRel,'dj.Relvar')
-                throwAsCaller(MException('DataJoint:invalidInput',...
-                    'The second input must be a job reservation relvar'));
-            end
-            assert(all(ismember(jobRel.primaryKey, [self.primaryKey,{'table_name'}])), ...
-                'The job table''s primary key fields must be a subset of populated table fields');
-            
-            self.jobRel = jobRel;
-            [varargout{1:nargout}] = self.populate(varargin{:});
-            self.jobRel = [];
-            self.jobKey = [];
-        end
-        
-        
-        
-        function [failedKeys, errors] = populate(self, varargin)
+        function varargout = populate(self, varargin)
+            % [failedKeys, errors] = populate(baseRelvar [, restrictors...])
             % populates a table based on the contents self.popRel
             %
             % The property self.popRel contains the relation that provides
@@ -67,146 +54,186 @@ classdef AutoPopulate < handle
             % applied to self.popRel.  Therefore, all keys to be populated
             % are obtained as fetch((self.popRel - self) & varargin).
             %
-            % See also dj.Relvar/fetch, dj.Relvar/minus, dj.Relvar/and.
-            %
-            % Without any output arguments, populate rethrows any error
-            % that occurs in makeTuples and terminates. However, if output
-            % arguments are requested, errors are caught and accumuluated
-            % in output arguments.
+            % Without any output arguments, populate rethrows errors
+            % that occur in makeTuples. However, if output arguments are
+            % requested, errors are suppressed and accumuluated into output
+            % arguments.
             %
             % EXAMPLES:
-            %   populate(OriMaps)   % populate all OriMaps
-            %   populate(OriMaps, 'mouse_id=12')    % populate OriMaps for mouse 12
-            %   [failedKeys, errs] = populate(OriMaps);  % skip errors and return their list
+            %   populate(tp.OriMaps)   % populate all tp.OriMaps
+            %   populate(tp.OriMaps, 'mouse_id=12')    % populate OriMaps for mouse 12
+            %   [failedKeys, errs] = populate(tp.OriMaps);  % skip errors and return their list
+            %
+            % See also dj.AutoPopulate/parpopulate
+            
             if ~isempty(self.restrictions)
                 throwAsCaller(MException('DataJoint:invalidInput', ...
                     'Cannot populate a restricted relation. Correct syntax: populate(rel, restriction)'))
             end
             self.schema.conn.cancelTransaction  % rollback any unfinished transaction
+            self.useReservations = false;
+            [varargout{1:nargout}] = self.populate_(varargin{:});
+        end
+        
+        
+        function varargout = parpopulate(self, varargin)
+            % dj.AutoPopulate/parpopulate works identically to dj.AutoPopulate/populate
+            % except that it uses a job reservation mechanism to enable multiple
+            % processes to populate the same table in parallel without collision.
+            %
+            % To enable parpopulate, create the job reservation table
+            % <package>.Jobs which must have the following declaration:
+            %   %{
+            %   package.Jobs (job)        # the job reservation table
+            %   table_name : varchar(255) # className of the table
+            %   key_hash   : char(32)     # key hash
+            %   -----
+            %   status                      : enum('reserved','error','ignore') # if tuple is missing, the job is available
+            %   error_key=null              : blob                              # non-hashed key for errors only
+            %   error_message=""            : varchar(1023)                     # error message returned if failed
+            %   error_stack=null            : blob                              # error stack if failed
+            %   timestamp=CURRENT_TIMESTAMP : timestamp                         # automatic timestamp
+            %   %}
+            %
+            % A job is considered to be available when <package>.Jobs contains
+            % no matching entry.
+            %
+            % For each makeTuples call, parpopulate sets the job status to
+            % "reserved".  When the job is completed, the record is
+            % removed. If the job results in error, the job record is left
+            % in place with the status set to "error" and the error message
+            % and error stacks saved. Consequently, jobs that ended in
+            % error during the last execution will not be attempted again
+            % until you delete the job tuples from package.Jobs.
+            %
+            % The primary key of the jobs table comprises the name of the
+            % class and the 32-bit MD5 hash of the primary key. However, the
+            % key is saved in a separate field for errors for debugging
+            % purposes.
+            % See also dj.AutoPopulate/populate
             
-            if nargout > 0
-                failedKeys = struct([]);
-                errors = struct([]);
+            if ~all(ismember(self.popRel.primaryKey, self.primaryKey))
+                throwAsCaller(MException('DataJoint:invalidPopRel', ...
+                    sprintf('%s.popRel''s primary key is too specific, move it higher in data hierarchy', class(self))))
+            end
+            self.schema.conn.cancelTransaction  % rollback any unfinished transaction
+            jobClassName = [self.schema.package '.Jobs'];
+            try
+                jobs_ = eval(jobClassName);
+                assert(isa(jobs_, 'dj.Relvar'))
+                self.jobs = jobs_;
+            catch %#ok<CTCH>
+                throwAsCaller(MException('DataJoint:missingJobs', 'Could not find class <package>.Jobs'))
             end
             
-            unpopulated = self.popRel;
-            assert(isa(unpopulated, 'dj.GeneralRelvar'), ...
-                'property popRel must be a subclass of dj.GeneralRelvar')
-            unpopulated = fetch((unpopulated & varargin) - self);
-            if isempty(unpopulated)
-                disp 'Nothing to populate'
-            else
-                if numel(self.jobRel)
-                    jobFields = self.jobRel.primaryKey(1:end-1);
-                    unpopulated = dj.struct.sort(unpopulated, jobFields);
-                end
-                fprintf('\n** Found %d unpopulated keys\n\n', length(unpopulated))
-                for key = unpopulated'
-                    if self.setJobStatus(key, 'reserved')    % this also marks previous job as completed
-                        self.schema.conn.startTransaction
-                        % check again in case a parallel process has already populated
-                        if count(self & key)
-                            self.schema.conn.cancelTransaction
-                        else
-                            fprintf('Populating %s for:\n', class(self))
-                            disp(key)
-                            try
-                                % do the work
-                                self.makeTuples(key)
-                                self.schema.conn.commitTransaction
-                            catch err
-                                fprintf('\n** Error while executing %s.makeTuples:\n', class(self))
-                                fprintf('%s: line %d\n', err.stack(1).file, err.stack(1).line);
-                                fprintf('"%s"\n\n',err.message)
-                                self.schema.conn.cancelTransaction
-                                self.setJobStatus(key, 'error', err.message, err.stack);
-                                if nargout > 0
-                                    failedKeys = [failedKeys; key]; %#ok<AGROW>
-                                    errors = [errors; err];         %#ok<AGROW>
-                                elseif ~numel(self.jobRel)
-                                    % rethrow error only if it's not already returned or logged.
-                                    rethrow(err)
-                                end
-                            end
-                        end
-                    end
-                end
-                % complete the last job if non-empty
-                self.setJobStatus(key, 'completed');
-            end
+            self.useReservations = true;
+            [varargout{1:nargout}] = self.populate_(varargin{:});
         end
     end
     
     
     
     
+    %%%% private stuff %%%%%
+    
+    
+    properties(Access=private)
+        useReservations
+        jobs
+    end
+    
     
     methods(Access = private)
         
-        function success = setJobStatus(self, key, status, errMsg, errStack)
-            % dj.AutoPopulate/setJobStatus - update job process for parallel
-            % execution.
-            
-            % If self.jobRel is not set, skip job management
-            success = ~numel(self.jobRel);
-            
-            if ~success
-                key.table_name = ...
-                    sprintf('%s.%s', self.schema.dbname, self.table.info.name);
-                switch status
-                    case {'completed','error'}
-                        % if no key checked out, do nothing. This may
-                        % happen if an error has already been logged and
-                        % the final "completed" is being submitted.
-                        if ~isempty(self.jobKey)
-                            % assert that the completed job matches the reservation
-                            assert(~isempty(dj.struct.join(key, self.jobKey)),...
-                                'job key mismatch ')
-                            key = dj.struct.pro(key, self.jobRel.primaryKey{:});
-                            key.job_status = status;
-                            if strcmp(status, 'error')
-                                key.error_message = errMsg;
-                                key.error_stack = errStack;
-                            end
-                            self.jobRel.insert(key, 'REPLACE')
-                            self.jobKey = [];
-                        end
-                        success = true;
-                        
-                    case 'reserved'
-                        % check if the job is already ours
-                        success = ~isempty(self.jobKey) && ...
-                            ~isempty(dj.struct.join(key, self.jobKey));
-                        
-                        if ~success
-                            % mark previous job completed
-                            if ~isempty(self.jobKey)
-                                self.jobKey.job_status = 'completed';
-                                self.jobRel.insert(self.jobKey, 'REPLACE');
-                            end
-                            
-                            % create the new job key
-                            self.jobKey = dj.struct.pro(key, self.jobRel.primaryKey{:});
-                            
-                            % check if the job is available
+        function [failedKeys, errors] = populate_(self, varargin)
+            if nargout
+                failedKeys = struct([]);
+                errors = struct([]);
+            end
+            unpopulated = self.popRel;
+            assert(isa(unpopulated, 'dj.GeneralRelvar'), ...
+                'property popRel must be a subclass of dj.GeneralRelvar')
+            unpopulated = fetch((unpopulated & varargin) - self);
+            if isempty(unpopulated)
+                fprintf('%s: Nothing to populate\n', self.table.className)
+            else
+                fprintf('\n**%s: Found %d unpopulated keys\n\n', self.table.className, length(unpopulated))
+                for key = unpopulated'
+                    if self.setJobStatus(key, 'reserved')
+                        self.schema.conn.startTransaction
+                        if exists(self & key)
+                            % already populated
+                            self.schema.conn.cancelTransaction
+                            self.setJobStatus(key, 'completed')
+                        else
+                            fprintf('Populating %s for:\n', self.table.className)
+                            disp(key)
                             try
-                                self.jobRel.insert(...
-                                    setfield(self.jobKey,'job_status',status))  %#ok
-                                disp '** reserved job:'
-                                disp(self.jobKey)
-                                success = true;
-                            catch %#ok
-                                % job already reserved
-                                disp '** skipped unavailable job:'
-                                disp(self.jobKey);
-                                self.jobKey = [];
+                                % do the work
+                                self.makeTuples(key)
+                                self.schema.conn.commitTransaction
+                                self.setJobStatus(key, 'completed')
+                            catch err
+                                fprintf('\n** Error while executing %s.makeTuples:\n', class(self))
+                                fprintf('%s: line %d\n', err.stack(1).file, err.stack(1).line);
+                                fprintf('"%s"\n\n',err.message)
+                                self.schema.conn.cancelTransaction
+                                self.setJobStatus(key, 'error', err.message, err.stack)
+                                if nargout
+                                    failedKeys = [failedKeys; key]; %#ok<AGROW>
+                                    errors = [errors; err];         %#ok<AGROW>
+                                else
+                                    if ~self.useReservations
+                                        % rethrow error only if not returned
+                                        rethrow(err)
+                                    end
+                                end
                             end
                         end
-                    otherwise
-                        error 'invalid job status'
+                    end
                 end
             end
-            
+        end
+        
+        
+        function success = setJobStatus(self, key, status, errMsg, errStack)
+            % dj.AutoPopulate/setJobStatus - update job process for parallel execution.
+            if ~self.useReservations
+                if strcmp(status,'reserved')
+                    success = true;
+                end
+            else
+                jobKey = struct('table_name', self.table.className, 'key_hash', dj.DataHash(key));
+                switch status
+                    case 'completed'
+                        delQuick(self.jobs & jobKey)
+                    case 'error'
+                        tuple = jobKey;
+                        tuple.status = status;
+                        tuple.error_key = key;
+                        tuple.error_message = errMsg;
+                        tuple.error_stack = errStack;
+                        self.jobs.insert(tuple,'REPLACE')
+                    case 'reserved'
+                        % this reservation process assumes that MySQL API
+                        % will throw an error when inserting a duplicate entry.
+                        success = ~exists(self.jobs & jobKey);
+                        if success
+                            tuple = jobKey;
+                            tuple.status = status;
+                            try
+                                self.jobs.insert(tuple);
+                                success = true;
+                            catch %#ok<CTCH>
+                                success = false;
+                            end
+                        end
+                        if ~success
+                            fprintf('** %s: skipped reserved job:', self.table.className)
+                            disp(key)
+                        end
+                end
+            end
         end
     end
 end
