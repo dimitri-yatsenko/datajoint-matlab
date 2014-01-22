@@ -120,8 +120,10 @@ classdef GeneralRelvar < matlab.mixin.Copyable
             fprintf('%d tuples (%.3g s)\n\n', nTuples, toc)
         end
         
-        function view(self)
+        function view(self, varargin)
             % dj.Relvar/view - view the data in speadsheet form. Blobs are omitted.
+            % Additional arguments are forwarded to fetch(), e.g. for ORDER BY
+            % and LIMIT clauses.
             if ~self.exists
                 disp 'empty relation'
             else
@@ -146,7 +148,7 @@ classdef GeneralRelvar < matlab.mixin.Copyable
                 format([self.header(sel).isNumeric]) = {'numeric'};
                 
                 % display table
-                data = fetch(self, columns{:});
+                data = fetch(self, columns{:}, varargin{:});
                 hfig = figure('Units', 'normalized', 'Position', [0.1 0.1 0.5 0.4], ...
                     'MenuBar', 'none');
                 uitable(hfig, 'Units', 'normalized', 'Position', [0.0 0.0 1.0 1.0], ...
@@ -326,10 +328,8 @@ classdef GeneralRelvar < matlab.mixin.Copyable
             for arg = varargin
                 if iscell(arg{1})
                     self.restrict(arg{1}{:})
-                end
-                % unless duplicate, append restriction
-                if ~any(cellfun(@(x) isequal(arg{1},x), self.restrictions))
-                    self.restrictions = [self.restrictions arg{1}];
+                else
+                    self.restrictions = [self.restrictions arg(1)];
                 end
             end
         end
@@ -346,11 +346,8 @@ classdef GeneralRelvar < matlab.mixin.Copyable
             %   tp.Scans & struct('mouse_id',3, 'scannum', 4);
             %   tp.Scans & 'lens=10'
             %   tp.Mice & (tp.Scans & 'lens=10')
-            if ~iscell(arg)
-                arg = {arg};
-            end
             ret = self.copy;
-            ret.restrictions = [ret.restrictions arg];
+            ret.restrict(arg)
         end
         
         function ret = or(self, arg)
@@ -406,7 +403,7 @@ classdef GeneralRelvar < matlab.mixin.Copyable
                     'Antijoin only accepts single restrictions'))
             end
             ret = self.copy;
-            ret.restrictions = [ret.restrictions {'not' arg}];
+            ret.restrict('not', arg)
         end
         
         function ret = pro(self, varargin)
@@ -707,8 +704,9 @@ for arg = restrictions
             % semijoin or antijoin
             [condAttrs, condSQL] = cond.compile;
             
-            % isolate previous projection (if not already)
-            if ismember(cond.operator, {'pro','aggregate'}) && isempty(cond.restrictions)
+            % isolate aggregations and non-trivial projections (if not already)
+            if ismember(cond.operator, {'pro','aggregate'}) && isempty(cond.restrictions) &&...
+                    ~all(cellfun(@isempty, {cond.header.alias}))
                 [attrStr, condAttrs] = makeAttrList(condAttrs);
                 condSQL = sprintf('(SELECT %s FROM %s) as `$u%x`', attrStr, condSQL, aliasCount);
             end

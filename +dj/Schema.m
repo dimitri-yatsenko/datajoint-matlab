@@ -277,7 +277,7 @@ classdef Schema < handle
                 % limit the diagram to the specified subset of tables
                 ix = find(~ismember(subset,self.classNames));
                 if ~isempty(ix)
-                    dj.assert(false,'Unknown table %d', subset(ix(1)))
+                    dj.assert(false,'Unknown table %s', subset{ix(1)})
                 end
             end
             subset = cellfun(@(x) find(strcmp(x,self.classNames)), subset);
@@ -453,7 +453,7 @@ classdef Schema < handle
                     objects{i} = eval(classes{i});
                     objects{i}.header;  % this will trigger the creation of a table if missing.
                 catch err
-                    dj.assert(false,['!invalidClass:;' err.message])
+                    dj.assert(false,['!invalidClass:' err.message])
                     continue
                 end
             end
@@ -493,11 +493,12 @@ classdef Schema < handle
             % reload schema information into memory: table names and field named.
             fprintf('loading table definitions from %s... ', self.dbname)
             tic
-            self.tables = self.conn.query(sprintf([...
-                'SELECT table_name AS name, table_comment AS comment ' ...
-                'FROM information_schema.tables ' ...
-                'WHERE table_schema="%s" AND table_name REGEXP "{S}"'], ...
-                self.dbname),self.tableRegexp);
+            self.tables = self.conn.query(sprintf(...
+                'SHOW TABLE STATUS FROM `%s` WHERE name REGEXP "{S}"', ...
+                self.dbname),self.tableRegexp,'bigint_to_double');
+            self.tables.name = self.tables.Name;
+            self.tables.comment = self.tables.Comment;
+            self.tables = dj.struct.pro(self.tables,'name','comment');
             
             % determine table tier (see dj.Table)
             re = cellfun(@(x) sprintf('^%s%s[a-z][a-z0-9_]*$',self.prefix,x), ...
