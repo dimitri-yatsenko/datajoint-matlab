@@ -5,8 +5,9 @@ classdef Connection < handle
         user
         initQuery    % initializing function or query executed for each new session
         inTransaction = false
-        connId       % connection handle
-        packages     % maps database names to package names
+        connHandle    % connection handle
+        connectionId  % server-side connection id
+        packages      % maps database names to package names
         
         % dependency lookups by table name
         foreignKeys   % maps table names to their referenced table names     (primary foreign key)
@@ -142,7 +143,7 @@ classdef Connection < handle
         
         
         function ret = get.isConnected(self)
-            ret = ~isempty(self.connId) && 0==mym(self.connId, 'status');
+            ret = ~isempty(self.connHandle) && 0==mym(self.connHandle, 'status');
             
             if ~ret && self.inTransaction
                 if dj.set('reconnectTimedoutTransaction')
@@ -159,19 +160,21 @@ classdef Connection < handle
             % SQL query and return the result if any.
             % The same connection is re-used by all DataJoint objects.
             if ~self.isConnected
-                self.connId=mym('open', self.host, self.user, self.password);
+                self.connHandle=mym('open', self.host, self.user, self.password);
                 if ~isempty(self.initQuery)
                     self.query(self.initQuery);
                 end
+                c = self.query('SELECT connection_id() as c');
+                self.connectionId = c.c;
             end
             v = varargin;
             if dj.set('bigint_to_double')
                 v{end+1} = 'bigint_to_double';
             end
             if nargout>0
-                ret=mym(self.connId, queryStr, v{:});
+                ret=mym(self.connHandle, queryStr, v{:});
             else
-                mym(self.connId, queryStr, v{:});
+                mym(self.connHandle, queryStr, v{:});
             end
         end
         
@@ -197,8 +200,8 @@ classdef Connection < handle
         
         function close(self)
             if self.isConnected
-                fprintf('closing DataJoint connection #%d\n', self.connId)
-                mym(self.connId, 'close')
+                fprintf('closing DataJoint connection #%d\n', self.connHandle)
+                mym(self.connHandle, 'close')
             end
             self.inTransaction = false;
         end
