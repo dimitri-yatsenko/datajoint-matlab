@@ -97,7 +97,7 @@ classdef AutoPopulate < dj.internal.UserRelation
             %
             % Additional input arguments contain restriction conditions
             % applied to the key source.  Therefore, all keys to be populated
-            % are obtained as fetch((self.getKeySource - self) & varargin).
+            % are obtained as fetch((self.getKeySource - self) & dj.AndList(varargin{:})).
             %
             % Without any output arguments, populate rethrows errors
             % that occur in makeTuples. However, if output arguments are
@@ -238,7 +238,7 @@ classdef AutoPopulate < dj.internal.UserRelation
             if ~self.hasJobs
                 jobClassName = [self.schema.package '.Jobs'];
                 if ~exist(jobClassName,'class')
-                    self.createJobTable
+                    self.jobs.createJobTable(self.schema.package)
                     rehash path
                 end
                 self.jobs_ = feval(jobClassName);
@@ -254,13 +254,13 @@ classdef AutoPopulate < dj.internal.UserRelation
                     'Cannot populate a restricted relation. Correct syntax: progress(rel, restriction)'))
             end
             
-            remaining = count((self.getKeySource & varargin) - self);
+            remaining = count((self.getKeySource & dj.AndList(varargin{:})) - self);
             if nargout
                 % return remaning items if asked
                 varargout{1} = remaining;
             else
                 fprintf('%s %30s:  ', datestr(now,'yyyy-mm-dd HH:MM:SS'), self.className)
-                total = count(self.getKeySource & varargin);
+                total = count(self.getKeySource & dj.AndList(varargin{:}));
                 if ~total
                     disp 'Nothing to populate'
                 else
@@ -287,10 +287,10 @@ classdef AutoPopulate < dj.internal.UserRelation
                 part{1}.create
             end
                      
-            popRestricts = varargin;  % restrictions on key source
+            popRestrict = dj.AndList(varargin{:});  % restrictions on key source
             restricts = self.restrictions;  % restricts on self
             if isempty(restricts)
-                unpopulated = fetch((self.getKeySource & popRestricts) - self.pro());
+                unpopulated = fetch((self.getKeySource & popRestrict) - self.proj());
             else
                 assert(numel(restricts)==1, 'only one restriction is allowed in populated relations')
                 restricts = restricts{1};
@@ -300,7 +300,7 @@ classdef AutoPopulate < dj.internal.UserRelation
                 assert(isstruct(restricts), ...
                     'populated relvars can be restricted only by other relations, structures, or structure arrays')
                 % the rule for populating restricted relations:
-                unpopulated = dj.struct.join(restricts, fetch((self.getKeySource & popRestricts & restricts) - (self & restricts)));
+                unpopulated = dj.struct.join(restricts, fetch((self.getKeySource & popRestrict & restricts) - (self & restricts)));
             end
             
             % restrict the key source to unpopulated tuples
@@ -348,7 +348,7 @@ classdef AutoPopulate < dj.internal.UserRelation
         
         function jobKey = makeJobKey(self, key)
             hash = dj.internal.hash(key);
-            jobKey = struct('table_name', self.className, 'key_hash', hash(32));
+            jobKey = struct('table_name', self.className, 'key_hash', hash(1:32));
         end
         
         
@@ -405,29 +405,6 @@ classdef AutoPopulate < dj.internal.UserRelation
         end
         
         
-        function createJobTable(self)
-            % Create the Jobs class if it does not yet exist
-            schemaPath = which([self.schema.package '.getSchema']);
-            assert(~isempty(schemaPath), 'missing function %s.getSchema', self.schema.package)
-            path = fullfile(fileparts(schemaPath), 'Jobs.m');
-            f = fopen(path,'w');
-            fprintf(f, '%%{\n');
-            fprintf(f, '# the job reservation table for +%s\n', self.schema.package);
-            fprintf(f, 'table_name : varchar(255) # className of the table\n');
-            fprintf(f, 'key_hash   : char(32)     # key hash\n');
-            fprintf(f, '-----\n');
-            fprintf(f, 'status    : enum("reserved","error","ignore") # if tuple is missing, the job is available\n');
-            fprintf(f, 'key=null           : blob                     # structure containing the key\n');
-            fprintf(f, 'error_message=""   : varchar(1023)            # error message returned if failed\n');
-            fprintf(f, 'error_stack=null   : blob                     # error stack if failed\n');
-            fprintf(f, 'host=""            : varchar(255)             # system hostname\n');
-            fprintf(f, 'pid=0              : int unsigned             # system process id\n');
-            fprintf(f, 'timestamp=CURRENT_TIMESTAMP : timestamp       # automatic timestamp\n');
-            fprintf(f, '%%}\n\n');
-            fprintf(f, 'classdef Jobs < dj.Jobs\n');
-            fprintf(f, 'end\n');
-            fclose(f);
-        end
         
         
         function populateSanityChecks(self)

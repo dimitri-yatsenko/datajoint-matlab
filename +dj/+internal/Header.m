@@ -188,11 +188,7 @@ classdef Header < matlab.mixin.Copyable
             assert(~isempty(self.attributes))
             for i = 1:length(self.attributes)
                 if isempty(self.attributes(i).alias)
-%                     if strcmp(self.attributes(i).type,'float')
-%                         sql = sprintf('%s,1.0*`%s` as `%s`', sql, self.names{i}, self.names{i});  % cast to double to avoid rounding problems
-%                     else
-                        sql = sprintf('%s,`%s`', sql, self.names{i});
-%                    end
+                    sql = sprintf('%s,`%s`', sql, self.names{i});
                 else
                     % aliased attributes
                     if strcmp(self.attributes(i).type,'float')  % cast to double to avoid rounding problems
@@ -211,7 +207,7 @@ classdef Header < matlab.mixin.Copyable
         end
         
         
-        function stripAliases(self)
+        function resolveAliases(self)
             for i=1:length(self.attributes)
                 self.attributes(i).alias = '';
             end

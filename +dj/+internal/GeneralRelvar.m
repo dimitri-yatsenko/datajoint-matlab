@@ -5,14 +5,14 @@
 classdef GeneralRelvar < matlab.mixin.Copyable
     
     properties(Dependent, SetAccess=private)
-        sql          % sql expression
+        sql          % sql expression -- with lazy evaluation
         primaryKey   % primary key attribute names
         nonKeyFields % non-key attribute names
-        header       % attributes and their properties
     end
     
     properties(SetAccess=private, GetAccess=public)
-        restrictions = {} % list of restrictions applied to operator output
+        restrictions = dj.AndList()   % list of restrictions applied to operator output
+        header       % attributes and their properties
     end
     
     properties(SetAccess=private, GetAccess=private)
@@ -22,14 +22,12 @@ classdef GeneralRelvar < matlab.mixin.Copyable
     end
     
     methods
-        function self = init(self, operator, operands, restrictions)
+        function self = init(self, operator, operands)
             self.operator = operator;
             if nargin>=3
                 self.operands = operands;
             end
-            if nargin>=4
-                self.restrictions = restrictions;
-            end
+            % TODO: compile header 
         end
         
         function conn = get.conn(self)
@@ -44,7 +42,7 @@ classdef GeneralRelvar < matlab.mixin.Copyable
         end
         
         function s = get.sql(self)
-            [~, s] = self.compile;
+            s = self.compile;
         end
         
         function names = get.primaryKey(self)
@@ -339,28 +337,19 @@ classdef GeneralRelvar < matlab.mixin.Copyable
         
         
         %%%%%%%%%%%%%%%%%%  RELATIONAL OPERATORS %%%%%%%%%%%%%%%%%%%%%%%%%%
-        function restrict(self, varargin)
-            % RESTRICT - relational restriction in place
-            % Restrictions may be provided as separate arguments or a
-            % single cell array.
-            % Restrictions may include sql expressions, other relvars, or
-            % structure arrays.
-            % Including the word 'not' in the restriction list negates one
-            % restriction that follows immediately.
-            % All conditions must be true for a tuple to pass.
+        function restrict(self, condition)
+            % RESTRICT - relational restriction by the given condition.
             %
             % Examples:
-            %    rel.restrict('session_date>2012-01-01', 'not', struct('anesthesia', 'urethane'))
+            %    rel.restrict(dj.AndList('session_date>2012-01-01', dj.Not(struct('anesthesia', 'urethane'))))
             %    rel2.restrict(rel)    % all tuples in rel2 that at least on tuple in rel
-            
-            for arg = varargin
-                if iscell(arg{1})
-                    self.restrict(arg{1}{:})
-                else
-                    self.restrictions = [self.restrictions arg(1)];
-                end
+           
+            if iscell(condition)
+                condition = dj.OrList(condition{:});
             end
+            self.restrictions.append(condition)
         end
+        
         
         function ret = and(self, arg)
             % AND - relational restriction
@@ -378,60 +367,19 @@ classdef GeneralRelvar < matlab.mixin.Copyable
             ret.restrict(arg)
         end
         
-        function ret = or(self, arg)
-            % the relational union operator.
-            %
-            % arg can be another relvar, a string condition, or a structure array of tuples.
-            %
-            % The result will be a special kind of relvar that can only be used
-            % as an argument in another restriction operator. It cannot be
-            % queried on its own.
-            %
-            % For example:
-            %   B | C   cannot be used on its own, but:
-            %   A & (B | C) returns all tuples in A that have matching tuples in B or C.
-            %   A - (B | C) returns all tuples in A that have no matching tuples in B or C.
-            %
-            % Warning:
-            %  ~A  does not produce a valid relation by itself. Negation is
-            %  only valid when applied to a restricing relvar.
-            
-            if ~strcmp(self.operator, 'union')
-                operandList = {self};
-            else
-                operandList = self.operands;
-            end
-            
-            % expand recursive unions
-            if ~isa(arg, 'dj.internal.GeneralRelvar') || ~strcmp(arg.operator, 'union')
-                operandList = [operandList {arg}];
-            else
-                operandList = [operandList arg.operands];
-            end
-            ret = init(dj.internal.GeneralRelvar, 'union', operandList);
+        function ret = or(self, arg) %#ok<INUSD,STOUT>
+            error 'The datajoint | operator has been removed. Please use dj.OrList instead.'
         end
         
-        function ret = not(self)
-            %  NOT - negation operator.
-            %  A & ~B   is equivalent to  A - B
-            % But here is an example where minus could not be used.
-            %  A & (B & cond | ~B)    % -- if B has matching tuples, also apply cond.
-            if strcmp(self.operator, 'not')
-                % negation cancels negation
-                ret = self.operands{1};
-            else
-                ret = init(dj.internal.GeneralRelvar, 'not', {self});
-            end
+        function ret = not(self)  %#ok<MANU,STOUT>
+            error 'The datajoint ~ operator has been removed. Please use dj.Not instead.'
         end
         
         function ret = minus(self, arg)
-            % MINUS -- relational antijoin
-            if iscell(arg)
-                throwAsCaller(MException('DataJoint:invalidOperator',...
-                    'Antijoin only accepts single restrictions'))
-            end
+            % negative restriction or antijoin. 
+            % rel - cond is equivalent to rel & dj.Not(arg)
             ret = self.copy;
-            ret.restrict('not', arg)
+            ret.restrict(dj.Not(arg))
         end
         
         function ret = proj(self, varargin)
@@ -499,12 +447,12 @@ classdef GeneralRelvar < matlab.mixin.Copyable
             %   Add field 'n' which contains the count of matching tuples in r2
             %   for every tuple in r1. Also add field 'avga' which contains the
             %   average value of field 'a' in r2.
-            %   >> result = r1.proj(r2,'count(*)->n','avg(a)->avga');
+            %   >> result = r1.aggr(r2, 'count(*)->n','avg(a)->avga');
             %
             % See also: PROJ
             
             assert(iscellstr(varargin), 'proj() requires a list of strings as attribute args')
-            ret = init(dj.internal.GeneralRelvar, 'aggregate', [{self, other} varargin]);
+            ret = init(dj.internal.GeneralRelvar, 'aggr', [{self} {other} varargin]);
         end
         
         function ret = pro(self, varargin)
@@ -534,22 +482,7 @@ classdef GeneralRelvar < matlab.mixin.Copyable
                 'mtimes requires another relvar as operand')
             ret = init(dj.internal.GeneralRelvar, 'join', {self arg});
         end
-        
-        
-        
-        %%%%% DEPRECATED RELATIIONAL OPERATORS (for backward compatibility)
-        function ret = times(self, arg)
-            warning 'The relational operator .* (semijoin) will be removed in a future release.  Please use & instead.'
-            ret = self & arg;
-        end
-        function ret = rdivide(self, arg)
-            warning 'The relational operator / (antijoin) will be removed in a future release.  Please use - instead.'
-            ret = self - arg;
-        end
-        function ret = plus(self, arg)
-            warning 'The relational operator + (union) will be removed in a future release.  Please use | instead'
-            ret = self | arg;
-        end
+               
         
         function ret = show(self)
             % SHOW - show the relation's header information.
@@ -668,7 +601,7 @@ classdef GeneralRelvar < matlab.mixin.Copyable
                     [header, sql] = compile(self.operands{1},1);
                     header.project(self.operands(2:end));
                     
-                case 'aggregate'
+                case 'aggr'
                     [header, sql] = compile(self.operands{1},2);
                     [header2, sql2] = compile(self.operands{2},2);
                     commonBlobs = intersect(header.blobNames, header2.blobNames);
@@ -695,7 +628,7 @@ classdef GeneralRelvar < matlab.mixin.Copyable
                 % clear aliases and enclose
                 if header.hasAliases
                     sql = sprintf('(SELECT %s FROM %s) as `$s%x`', header.sql, sql, aliasCount);
-                    header.stripAliases;
+                    header.resolveAliases;
                 end
                 % add WHERE clause
                 sql = sprintf('%s%s', sql);
@@ -708,9 +641,9 @@ classdef GeneralRelvar < matlab.mixin.Copyable
             % enclose in subquery if necessary
             if enclose==1 && header.hasAliases ...
                     || enclose==2 && (~ismember(self.operator, {'table', 'join'}) || ~isempty(self.restrictions)) ...
-                    || enclose==3 && strcmp(self.operator, 'aggregate')
+                    || enclose==3 && strcmp(self.operator, 'aggr')
                 sql = sprintf('(SELECT %s FROM %s) AS `$a%x`', header.sql, sql, aliasCount);
-                header.stripAliases;
+                header.resolveAliases;
             end
         end
     end
@@ -786,7 +719,7 @@ for arg = restrictions
             [condHeader, condSQL] = cond.compile;
             
             % isolate previous projection (if not already)
-            if ismember(cond.operator, {'proj','aggregate'}) && isempty(cond.restrictions) && ...
+            if ismember(cond.operator, {'proj','aggr'}) && isempty(cond.restrictions) && ...
                     ~all(cellfun(@isempty, {cond.header.attributes.alias}))
                 condSQL = sprintf('(SELECT %s FROM %s) as `$u%x`', ...
                     condHeader.sql, condSQL, aliasCount);
