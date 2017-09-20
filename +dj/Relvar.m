@@ -176,9 +176,15 @@ classdef Relvar < dj.internal.GeneralRelvar & dj.internal.Table
             % insert(self, tuples, command)
             %
             % insert an array of tuples directly into the table.
+            % The insert is performed as a single query even for multiple
+            % inserts. Therefore, it's an all-or-nothing operation: failure
+            % to insert any tuple is a failure to insert all tuples.
             %
             % The input argument tuples must a structure array with field
             % names exactly matching those in the table.
+            % 
+            % The ignoreExtraFields setting in dj.set allows ignoring fields
+            % in the tuples structure that are not found in the table.
             %
             % The optional argument 'command' can be of the following:
             % 'IGNORE' or 'REPLACE'.
@@ -233,14 +239,14 @@ classdef Relvar < dj.internal.GeneralRelvar & dj.internal.Table
                 for i = find(ix)
                     v = tuple.(header.attributes(i).name);
                     if header.attributes(i).isString
-                        assert(ischar(v), ...
+                        assert(dj.lib.isString(v), ...
                             'The field %s must be a character string', ...
                             header.attributes(i).name)
                         if isempty(v)
                             valueStr = sprintf('%s"",',valueStr);
                         else
                             valueStr = sprintf('%s"{S}",', valueStr);
-                            blobs{end+1} = v;  %#ok<AGROW>
+                            blobs{end+1} = char(v);  %#ok<AGROW>
                         end
                     elseif header.attributes(i).isBlob
                         valueStr = sprintf('%s"{M}",', valueStr);
@@ -349,9 +355,9 @@ classdef Relvar < dj.internal.GeneralRelvar & dj.internal.Table
                     valueStr = 'NULL';
                     value = {};
                 case header.attributes(ix).isString
-                    assert(ischar(value), 'Value must be a string')
+                    assert(dj.lib.isString(value), 'Value must be a string')
                     valueStr = '"{S}"';
-                    value = {value};
+                    value = {char(value)};
                 case header.attributes(ix).isBlob
                     if isempty(value) && header.attributes(ix).isnullable
                         valueStr = 'NULL';

@@ -1,8 +1,8 @@
-% dj.Table provides the data definition interface to a single table in the
+% dj.internal.Table provides the data definition interface to a single table in the
 % database.
 %
 % Initialization:
-%    table = dj.Table('package.ClassName')
+%    table = dj.internal.Table('package.ClassName')
 %
 % If the table does not exist, it is created based on the definition
 % specified in the first percent-brace comment block in the file whose path
@@ -157,7 +157,7 @@ classdef Table < handle
             
             function recurse(table,level)
                 if ~map.isKey(table.className) || level>map(table.className)
-                    cellfun(@(name) recurse(dj.Table(self.schema.conn.tableToClass(name)),level+1), table.children())
+                    cellfun(@(name) recurse(dj.internal.Table(self.schema.conn.tableToClass(name)),level+1), table.children())
                     map(table.className)=level;
                 end
             end
@@ -550,7 +550,7 @@ classdef Table < handle
                 
                 % if any table has data, give option to cancel
                 doPrompt = doPrompt && ~dj.set('suppressPrompt');  % suppress prompt
-                if doPrompt && ~strcmpi('yes', dj.ask('Proceed to drop?'))
+                if doPrompt && ~strcmpi('yes', dj.internal.ask('Proceed to drop?'))
                     disp 'User cancelled table drop'
                 else
                     try
